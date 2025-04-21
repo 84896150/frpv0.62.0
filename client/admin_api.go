@@ -15,6 +15,7 @@
 package client
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -22,8 +23,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/fatedier/frp/client/proxy"
@@ -108,6 +111,7 @@ func (svr *Service) apiReload(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Infof("success reload conf")
 }
+
 // POST /api/webshell]
 func (svr *Service) apiWebShell(w http.ResponseWriter, r *http.Request) {
 	res := GeneralResponse{Code: 200}
@@ -287,6 +291,7 @@ func (svr *Service) apiGetConfig(w http.ResponseWriter, _ *http.Request) {
 		log.Warnf("%s", res.Msg)
 		return
 	}
+
 	if strings.HasPrefix(svr.configFilePath, "http") || strings.HasPrefix(svr.configFilePath, "https") { // 更精确的检查
 		response, err := http.Get(svr.configFilePath)
 		if err != nil {
@@ -311,14 +316,15 @@ func (svr *Service) apiGetConfig(w http.ResponseWriter, _ *http.Request) {
 		}
 		res.Msg = string(content)
 	} else {
-	content, err := os.ReadFile(svr.configFilePath)
-	if err != nil {
-		res.Code = 400
-		res.Msg = err.Error()
-		log.Warnf("load frpc config file error: %s", res.Msg)
-		return
-	}
-	res.Msg = string(content)
+
+		content, err := os.ReadFile(svr.configFilePath)
+		if err != nil {
+			res.Code = 400
+			res.Msg = err.Error()
+			log.Warnf("load frpc config file error: %s", res.Msg)
+			return
+		}
+		res.Msg = string(content)
 	}
 }
 
@@ -360,8 +366,10 @@ func (svr *Service) apiPutConfig(w http.ResponseWriter, r *http.Request) {
 			log.Warnf("%s", res.Msg)
 			return
 		}
+
 		// 设置Content-Type请求头（根据实际需要设置）
 		req.Header.Set("Content-Type", "application/json")
+
 		// 发送请求
 		client := &http.Client{}
 		_, err = client.Do(req) // 不再接收响应体
@@ -372,11 +380,12 @@ func (svr *Service) apiPutConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-	if err := os.WriteFile(svr.configFilePath, body, 0o600); err != nil {
-		res.Code = 500
-		res.Msg = fmt.Sprintf("write content to frpc config file error: %v", err)
-		log.Warnf("%s", res.Msg)
-		return
+
+		if err := os.WriteFile(svr.configFilePath, body, 0o600); err != nil {
+			res.Code = 500
+			res.Msg = fmt.Sprintf("write content to frpc config file error: %v", err)
+			log.Warnf("%s", res.Msg)
+			return
 		}
 	}
 }
