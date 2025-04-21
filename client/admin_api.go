@@ -316,7 +316,6 @@ func (svr *Service) apiGetConfig(w http.ResponseWriter, _ *http.Request) {
 		}
 		res.Msg = string(content)
 	} else {
-
 		content, err := os.ReadFile(svr.configFilePath)
 		if err != nil {
 			res.Code = 400
@@ -380,7 +379,6 @@ func (svr *Service) apiPutConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-
 		if err := os.WriteFile(svr.configFilePath, body, 0o600); err != nil {
 			res.Code = 500
 			res.Msg = fmt.Sprintf("write content to frpc config file error: %v", err)
