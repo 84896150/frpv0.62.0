@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,11 +98,27 @@ func RenderWithTemplate(in []byte, values *Values) ([]byte, error) {
 }
 
 func LoadFileContentWithTemplate(path string, values *Values) ([]byte, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	if strings.HasPrefix(path, "http") || strings.HasPrefix(path, "https") { // 更精确的检查
+		response, err := http.Get(path)
+		if err != nil {
+			return nil, err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to fetch remote configuration: %s", response.Status)
+		}
+		b, err := io.ReadAll(response.Body)
+		if err != nil {
+			return nil, err
+		}
+		return RenderWithTemplate(b, values)
+	} else {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return RenderWithTemplate(b, values)
 	}
-	return RenderWithTemplate(b, values)
 }
 
 func LoadConfigureFromFile(path string, c any, strict bool) error {
